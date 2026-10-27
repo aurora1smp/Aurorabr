@@ -792,9 +792,56 @@ nav a{flex:none;font-size:9px;padding:12px 10px}
 <div class="pbar" aria-hidden="true"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i><i style="--i:9"></i></div>
 </div>
 </div>
+<script type="module">
+/* ===== FIREBASE (Firestore) — substitui a planilha do Google ===== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+/* >>> COLE AQUI o seu firebaseConfig (Console Firebase > Configurações do projeto > Seus apps > Web) <<< */
+const firebaseConfig = {
+  apiKey: "AIzaSyBJVAXTq8G_VnryA6ASIb3c9iVM-vyK9YY",
+  authDomain: "painel-aurora-45612.firebaseapp.com",
+  projectId: "painel-aurora-45612",
+  storageBucket: "painel-aurora-45612.firebasestorage.app",
+  messagingSenderId: "351293124365",
+  appId: "1:351293124365:web:511a4033fd1e15f5f44a44"
+};
+
+const db = getFirestore(initializeApp(firebaseConfig));
+const norm = v => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+async function parceiro(c) {
+  c = norm(c); if (!c) return null;
+  const s = await getDoc(doc(db, "parceiros", c));
+  return s.exists() ? s.data() : null;
+}
+function sufixo() {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", r = new Uint32Array(4);
+  crypto.getRandomValues(r);
+  return Array.from(r, n => abc[n % abc.length]).join("");
+}
+window.FB = {
+  verificarCodigo: async c => !!(await parceiro(c)),
+  // colecao: "auromaps" | "aurohost"; prefixo: "AM" | "AH"; valor: preço numérico do plano
+  async salvarPedido(colecao, prefixo, dados, valor) {
+    const cod = norm(dados.codigo);
+    let comissao = 0;
+    if (cod) {
+      const pa = await parceiro(cod);
+      if (!pa) return { ok: false, erro: "codigo_invalido" };
+      comissao = Math.round(valor * (Number(pa.porcentagem) || 0)) / 100;
+    }
+    const pedido = "#" + prefixo + "-" + sufixo();
+    await addDoc(collection(db, colecao), {
+      ...dados, codigo: cod, valor, comissao, pedido,
+      data: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+      status: "Pendente", criadoEm: serverTimestamp()
+    });
+    return { ok: true, pedido };
+  }
+};
+</script>
 <script>
-/* Planilha do Google ÚNICA: Auromaps e Aurohost enviam para a mesma URL (/exec); o campo "produto" decide a aba. */
-var SHEETS_URL_UNICA = "https://script.google.com/macros/s/AKfycbx-os-mZF0Dn7df4vzsKp-Enn7WFF_VNW_V9Mg9InDJ0_kLRWxItigP1CrFGsIiFFCAIQ/exec";
 
 /* ---- Código de parceiro: opcional, em MAIÚSCULAS (letras e números), conferido no Apps Script (lista PARCEIROS no Codigo.gs) ---- */
 function normCodigo(v){return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}
@@ -803,17 +850,7 @@ function normCodigo(v){return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,"
    O site pergunta ao Apps Script (?acao=codigo&c=...) se o código existe. */
 async function verificarCodigo(c){
   c=normCodigo(c); if(!c) return false;
-  var j=null;
-  try{
-    var r=await fetch(SHEETS_URL_UNICA+"?acao=codigo&c="+encodeURIComponent(c));
-    j=await r.json();
-  }catch(e1){
-    console.warn("Verificação por GET falhou, tentando POST:",e1);
-    var r2=await fetch(SHEETS_URL_UNICA,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({acao:"codigo",c:c})});
-    j=await r2.json();
-  }
-  if(!j||typeof j.existe!=="boolean"){console.warn("Resposta inesperada do script:",j);throw new Error("resposta inesperada")}
-  return j.existe;
+  return await window.FB.verificarCodigo(c);
 }
 function ligarCodigo(inp,st){
   var t=null,seq=0,cod="";
@@ -898,8 +935,6 @@ t.addEventListener("scroll",mark);mark();
 (function(){
 /* ============ CONFIGURAÇÃO — edite aqui ============ */
 const CONFIG = {
-  // Planilha do Google que recebe os pedidos: URL do app da web (termina em /exec). Veja apps-script.gs
-  SHEETS_URL: SHEETS_URL_UNICA,
   // Tamanhos disponíveis. Cada preço tem seu link de pagamento (troque pelos seus).
   LINK_4_99: "https://pag.ae/82euamaB2",
   LINK_6_70: "https://pag.ae/82euaJgX2",
@@ -987,18 +1022,13 @@ $("form").addEventListener("submit", async e => {
       return msg(COD.valor() ? "Corrija ou apague o código de parceiro para continuar." : "Não foi possível confirmar o pedido.","err");
     }
     pedido.codigo = COD.valor();
-    if (CONFIG.SHEETS_URL) {
-      // O Apps Script grava na aba Auromaps, gera o código do pedido (#AM01, #AM02…) e devolve para o resumo
-      const resp = await fetch(CONFIG.SHEETS_URL, {
-        method: "POST", headers: {"Content-Type":"text/plain;charset=utf-8"}, body: JSON.stringify(pedido)
-      });
-      const j = await resp.json();
-      if (!j.ok) {
-        btn.disabled = false;
-        return msg(j.erro === "codigo_invalido" ? "Esse código de parceiro não existe." : "Não foi possível registrar o pedido. Tente de novo em instantes.","err");
-      }
-      pedido.pedido = j.pedido || "";
+    // Grava no Firebase (coleção "auromaps") e recebe o código do pedido (#AM-XXXX)
+    const j = await window.FB.salvarPedido("auromaps", "AM", pedido, p.preco);
+    if (!j.ok) {
+      btn.disabled = false;
+      return msg(j.erro === "codigo_invalido" ? "Esse código de parceiro não existe." : "Não foi possível registrar o pedido. Tente de novo em instantes.","err");
     }
+    pedido.pedido = j.pedido || "";
     msg("");
     showPay(pedido, p);
   } catch (err) {
@@ -1051,7 +1081,6 @@ setTimeout(function(){
 (function(){
 // ===== Ajuste aqui =====
 // Em cada plano abaixo, cole o link de pagamento em  link:"..."  (se ficar vazio, o site avisa que a equipe entra em contato).
-var PLANILHA_URL = SHEETS_URL_UNICA; // mesma planilha do Auromaps (cada produto grava na sua aba)
 var PLANOS = [
  {nome:"Básico",link:"",preco:29.90,rec:[0,0,0],itens:["Até 4 jogadores","CPU Padrão","Até 3 GB RAM","SSD NVMe ilimitado","Subdomínio grátis","Proteção Anti-DDoS"]},
  {nome:"Pro",link:"",preco:59.90,rec:[1,1,0],itens:["Jogadores ilimitados","CPU Padrão","RAM ilimitada","SSD NVMe ilimitado","Subdomínio grátis","Proteção Anti-DDoS"]},
@@ -1162,21 +1191,18 @@ function idadeDe(v){
 }
 var ultimoEnvio="",ultimoPedido="";
 function limpa(v){v=String(v);return /^[=+\-@]/.test(v)?"'"+v:v}
-// Envia o pedido para a aba Aurohost da planilha; o Apps Script gera o código (#AH01, #AH02…) e devolve.
+// Grava o pedido na coleção "aurohost" do Firebase; o código (#AH-XXXX) é gerado e devolvido.
 async function registrar(L){
- if(!PLANILHA_URL)return {};
- var d={},p=PLANOS[S.plano];
- d["produto"]="Aurohost";
- d["Data/hora"]=new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"});
- L.forEach(function(r){d[r[0]]=limpa(r[1])});
- d["Plano"]=p.nome;d["Valor"]=brl(p.preco);
- d["Nascimento"]=S.nasc.split("-").reverse().join("/");
- d["Telefone"]=S.tel.replace(/[^\d()\s-]/g,"").trim();
- d["codigo"]=COD?COD.valor():"";
- var corpo=JSON.stringify(d),chave=corpo.replace(/"Data\/hora":"[^"]*",/,"");
+ var m={},p=PLANOS[S.plano];
+ L.forEach(function(r){m[r[0]]=String(r[1])});
+ var d={nome:m["Cliente"],nascimento:S.nasc.split("-").reverse().join("/"),email:m["E-mail"],
+  servidor:m["Servidor"],versao:m["Versão"],dificuldade:m["Dificuldade"],mapa:m["Mapa"],addons:m["Addons"],
+  whitelist:m["Whitelist"],cheats:m["Cheats"],ram:m["RAM"],cpu:m["CPU"],jogadores:m["Jogadores"],
+  plano:p.nome,modo:m["Modo de jogo"],seed:m["Seed"],
+  telefone:S.tel.replace(/[^\d()\s-]/g,"").trim(),codigo:COD?COD.valor():""};
+ var chave=JSON.stringify(d);
  if(chave===ultimoEnvio&&ultimoPedido)return {pedido:ultimoPedido}; // mesmo pedido reenviado: não duplica
- var r=await fetch(PLANILHA_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:corpo});
- var j=await r.json();
+ var j=await window.FB.salvarPedido("aurohost","AH",d,p.preco);
  if(!j.ok){var e=new Error(j.erro==="codigo_invalido"?"Esse código de parceiro não existe.":"Não foi possível registrar o pedido. Tente de novo em instantes.");e.custom=true;throw e}
  ultimoEnvio=chave;ultimoPedido=j.pedido||"";
  return {pedido:ultimoPedido};
